@@ -21,13 +21,13 @@ This is a rules-based approximation, not institutional order-flow data. CHoCH an
 
 - Default risk per trade: 0.25% of equity.
 - Default reward/risk: 2:1.
-- Default daily equity loss limit: 2% from the stored day-start equity.
+- Default daily equity loss limit: 2% from the stored day-start equity; once reached, new entries remain locked until the next broker-server day, including after EA restart.
 - One open position per symbol and magic number.
 - Spread filter, broker stop-distance check, volume-step normalization and server-retcode validation.
 - Lot sizing uses `OrderCalcProfit` for a one-lot loss estimate in account currency. If the minimum broker lot would exceed the requested risk, the EA skips the trade rather than rounding risk upward.
 - No martingale, grid, averaging down or recovery sizing.
 
-**Daily-limit caveat:** the start-of-day equity baseline is saved in a terminal global variable, so restarting the EA during the same terminal installation should preserve it. If the EA is attached for the first time partway through a day, that attachment equity becomes the baseline. The daily guard blocks new entries; it does not forcibly close open positions and cannot guarantee a maximum account loss.
+**Daily-limit caveat:** the start-of-day equity baseline is saved in a terminal global variable, so restarting the EA during the same terminal installation should preserve it. If the EA is attached for the first time partway through a day, that attachment equity becomes the baseline. The daily guard latches a lockout for new entries; it does not forcibly close open positions and cannot guarantee a maximum account loss.
 
 ## Initial demo configuration
 
