@@ -91,7 +91,8 @@ int CountOurPositions()
 
 int TrendDirection()
 {
-   double f[3],s[3];
+   double f[],s[];
+   ArrayResize(f,2); ArrayResize(s,2);
    ArraySetAsSeries(f,true); ArraySetAsSeries(s,true);
    if(CopyBuffer(fastHandle,0,1,2,f)<2 || CopyBuffer(slowHandle,0,1,2,s)<2)
       return 0;
