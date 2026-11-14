@@ -37,6 +37,7 @@ int fastHandle = INVALID_HANDLE;
 int slowHandle = INVALID_HANDLE;
 int atrHandle = INVALID_HANDLE;
 string dailyEquityKey = "";
+string dailyLockKey = "";
 datetime lastEntryBar = 0;
 int dayKey = -1;
 double dayStartEquity = 0.0;
@@ -72,8 +73,11 @@ void RefreshDailyEquity()
    if(k!=dayKey)
    {
       dayKey=k;
-      dailyEquityKey="PA_SMC_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+
-                     IntegerToString((long)MagicNumber)+"_"+_Symbol+"_"+IntegerToString(dayKey);
+      string dailyPrefix="PA_SMC_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+
+                         IntegerToString((long)MagicNumber)+"_"+_Symbol+"_"+IntegerToString(dayKey);
+      dailyEquityKey=dailyPrefix+"_EQUITY";
+      dailyLockKey=dailyPrefix+"_LOCK";
+      if(!GlobalVariableCheck(dailyLockKey)) GlobalVariableSet(dailyLockKey,0.0);
       if(GlobalVariableCheck(dailyEquityKey))
          dayStartEquity=GlobalVariableGet(dailyEquityKey);
       else
@@ -88,8 +92,16 @@ bool DailyLossAllowed()
 {
    RefreshDailyEquity();
    if(dayStartEquity<=0) return false;
+   if(GlobalVariableCheck(dailyLockKey) && GlobalVariableGet(dailyLockKey)>=1.0)
+      return false;
    double lossPct=(dayStartEquity-AccountInfoDouble(ACCOUNT_EQUITY))/dayStartEquity*100.0;
-   return (lossPct<MaxDailyLoss);
+   if(lossPct>=MaxDailyLoss)
+   {
+      GlobalVariableSet(dailyLockKey,1.0);
+      Print("Daily loss limit reached. New entries locked until the next server day.");
+      return false;
+   }
+   return true;
 }
 
 int CountOurPositions()
