@@ -4,7 +4,7 @@
 //| No claim of equivalence to, or endorsement by, Pip Lord.          |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "0.10"
+#property version   "0.20"
 #property description "Multi-timeframe Price Action EA: trend, BOS, FVG retest, risk controls."
 
 #include <Trade/Trade.mqh>
@@ -17,6 +17,11 @@ input int             FastEMA       = 50;
 input int             SlowEMA       = 200;
 input int             SwingLookback = 12;
 input int             ZoneLookback  = 8;
+input int             MaxFvgAgeBars  = 5;
+input double          MinBOSBodyATR  = 0.15;
+input bool            UseTickVolumeFilter = false;
+input int             VolumeAverageBars = 20;
+input double          VolumeMultiplier = 1.20;
 input double          RiskPercent   = 0.25;
 input double          RewardRisk    = 2.0;
 input double          MaxDailyLoss  = 2.0;
@@ -30,6 +35,8 @@ input int             EndHour         = 17;
 
 int fastHandle = INVALID_HANDLE;
 int slowHandle = INVALID_HANDLE;
+int atrHandle = INVALID_HANDLE;
+string dailyEquityKey = "";
 datetime lastEntryBar = 0;
 int dayKey = -1;
 double dayStartEquity = 0.0;
@@ -65,7 +72,15 @@ void RefreshDailyEquity()
    if(k!=dayKey)
    {
       dayKey=k;
-      dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+      dailyEquityKey="PA_SMC_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+
+                     IntegerToString((long)MagicNumber)+"_"+_Symbol+"_"+IntegerToString(dayKey);
+      if(GlobalVariableCheck(dailyEquityKey))
+         dayStartEquity=GlobalVariableGet(dailyEquityKey);
+      else
+      {
+         dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+         GlobalVariableSet(dailyEquityKey,dayStartEquity);
+      }
    }
 }
 
@@ -108,7 +123,7 @@ bool FindSetup(int direction, Zone &fvg, Zone &ob, double &swingStop)
 {
    MqlRates r[];
    ArraySetAsSeries(r,true);
-   int need=MathMax(SwingLookback+5,ZoneLookback+5);
+   int need=MathMax(SwingLookback+5,MathMax(ZoneLookback+5,MaxFvgAgeBars+4));
    if(CopyRates(_Symbol,SetupTF,0,need,r)<need) return false;
 
    double priorHigh=r[2].high, priorLow=r[2].low;
@@ -117,11 +132,19 @@ bool FindSetup(int direction, Zone &fvg, Zone &ob, double &swingStop)
       priorHigh=MathMax(priorHigh,r[i].high);
       priorLow=MathMin(priorLow,r[i].low);
    }
-   bool bos=(direction==1 ? r[1].close>priorHigh : r[1].close<priorLow);
+   bool bos=(direction==1 ? (r[1].close>priorHigh && r[1].close>r[1].open)
+                          : (r[1].close<priorLow && r[1].close<r[1].open));
    if(!bos) return false;
 
+   double atr[];
+   ArrayResize(atr,1);
+   ArraySetAsSeries(atr,true);
+   if(CopyBuffer(atrHandle,0,1,1,atr)<1 || atr[0]<=0) return false;
+   double bosBody=MathAbs(r[1].close-r[1].open);
+   if(bosBody<atr[0]*MinBOSBodyATR) return false;
+
    bool gapFound=false;
-   for(int i=1;i<=3;i++)
+   for(int i=1;i<=MaxFvgAgeBars;i++)
    {
       // Bullish FVG: older candle high below newer candle low.
       if(direction==1 && r[i+2].high<r[i].low)
@@ -176,16 +199,27 @@ double NormalizeVolume(double lots)
    return NormalizeDouble(lots,digits);
 }
 
-double LotsForRisk(double entry,double stop)
+double LotsForRisk(ENUM_ORDER_TYPE orderType,double entry,double stop)
 {
    double riskMoney=AccountInfoDouble(ACCOUNT_EQUITY)*RiskPercent/100.0;
-   double tickSize=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
-   double tickValue=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
-   double distance=MathAbs(entry-stop);
-   if(distance<=0 || tickSize<=0 || tickValue<=0) return 0;
-   double lossPerLot=(distance/tickSize)*tickValue;
+   double oneLotResult=0.0;
+   if(riskMoney<=0 || !OrderCalcProfit(orderType,_Symbol,1.0,entry,stop,oneLotResult))
+      return 0;
+   double lossPerLot=MathAbs(oneLotResult);
    if(lossPerLot<=0) return 0;
-   return NormalizeVolume(riskMoney/lossPerLot);
+
+   double rawLots=riskMoney/lossPerLot;
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double maxLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   if(step<=0 || rawLots<minLot) return 0; // Never round up beyond intended risk.
+   rawLots=MathMin(rawLots,maxLot);
+   double lots=MathFloor(rawLots/step)*step;
+   if(lots<minLot) return 0;
+
+   int digits=2;
+   if(step>=1.0) digits=0; else if(step>=0.1) digits=1; else if(step>=0.01) digits=2; else digits=3;
+   return NormalizeDouble(lots,digits);
 }
 
 bool SpreadAllowed()
@@ -208,7 +242,7 @@ void TryEntry()
 
    MqlRates e[];
    ArraySetAsSeries(e,true);
-   if(CopyRates(_Symbol,EntryTF,0,3,e)<3) return;
+   if(CopyRates(_Symbol,EntryTF,0,VolumeAverageBars+2,e)<VolumeAverageBars+2) return;
    // Use the last closed entry candle: it must touch the shared FVG/OB zone
    // and close back in the direction of the higher-timeframe bias.
    double zoneLow=MathMax(fvg.low,ob.low);
@@ -216,6 +250,15 @@ void TryEntry()
    bool touched=(e[1].low<=zoneHigh && e[1].high>=zoneLow);
    bool confirm=(dir==1 ? e[1].close>e[1].open : e[1].close<e[1].open);
    if(!touched || !confirm) return;
+
+   if(UseTickVolumeFilter)
+   {
+      if(VolumeAverageBars<2) return;
+      double averageVolume=0.0;
+      for(int i=2;i<VolumeAverageBars+2;i++) averageVolume+=(double)e[i].tick_volume;
+      averageVolume/=(double)VolumeAverageBars;
+      if(averageVolume<=0 || (double)e[1].tick_volume<averageVolume*VolumeMultiplier) return;
+   }
 
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
@@ -229,8 +272,9 @@ void TryEntry()
 
    double risk=MathAbs(entry-stop);
    if(risk<2*_Point) return;
+   if((dir==1 && stop>=entry) || (dir==-1 && stop<=entry)) return;
    double target=NormalizeDouble(entry+dir*risk*RewardRisk,_Digits);
-   double lots=LotsForRisk(entry,stop);
+   double lots=LotsForRisk((dir==1 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL),entry,stop);
    if(lots<=0) return;
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -245,12 +289,16 @@ void TryEntry()
 int OnInit()
 {
    if(RiskPercent<=0 || RiskPercent>2 || RewardRisk<1 || MaxDailyLoss<=0 ||
-      FastEMA<=0 || SlowEMA<=FastEMA || SwingLookback<3 || MaxPositions<1)
+      FastEMA<=0 || SlowEMA<=FastEMA || SwingLookback<3 || MaxPositions<1 ||
+      MaxFvgAgeBars<1 || ZoneLookback<2 || MinBOSBodyATR<0 ||
+      VolumeAverageBars<2 || VolumeMultiplier<=0)
       return INIT_PARAMETERS_INCORRECT;
 
    fastHandle=iMA(_Symbol,TrendTF,FastEMA,0,MODE_EMA,PRICE_CLOSE);
    slowHandle=iMA(_Symbol,TrendTF,SlowEMA,0,MODE_EMA,PRICE_CLOSE);
-   if(fastHandle==INVALID_HANDLE || slowHandle==INVALID_HANDLE) return INIT_FAILED;
+   atrHandle=iATR(_Symbol,SetupTF,14);
+   if(fastHandle==INVALID_HANDLE || slowHandle==INVALID_HANDLE || atrHandle==INVALID_HANDLE)
+      return INIT_FAILED;
 
    trade.SetExpertMagicNumber(MagicNumber);
    RefreshDailyEquity();
@@ -261,6 +309,7 @@ void OnDeinit(const int reason)
 {
    if(fastHandle!=INVALID_HANDLE) IndicatorRelease(fastHandle);
    if(slowHandle!=INVALID_HANDLE) IndicatorRelease(slowHandle);
+   if(atrHandle!=INVALID_HANDLE) IndicatorRelease(atrHandle);
 }
 
 void OnTick()
