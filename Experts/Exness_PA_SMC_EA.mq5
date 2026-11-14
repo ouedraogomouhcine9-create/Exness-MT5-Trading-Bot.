@@ -282,8 +282,12 @@ void TryEntry()
    trade.SetTypeFillingBySymbol(_Symbol);
    bool sent=(dir==1 ? trade.Buy(lots,_Symbol,0,stop,target,"PA-SMC FVG retest")
                      : trade.Sell(lots,_Symbol,0,stop,target,"PA-SMC FVG retest"));
-   if(!sent) Print("Order failed: ",trade.ResultRetcode()," - ",trade.ResultRetcodeDescription());
-   else Print("Order sent. Lots=",lots," SL=",stop," TP=",target);
+   uint retcode=trade.ResultRetcode();
+   if(!sent || (retcode!=TRADE_RETCODE_DONE && retcode!=TRADE_RETCODE_PLACED &&
+                retcode!=TRADE_RETCODE_DONE_PARTIAL))
+      Print("Order rejected/failed: ",retcode," - ",trade.ResultRetcodeDescription());
+   else
+      Print("Order accepted. Lots=",lots," SL=",stop," TP=",target," retcode=",retcode);
 }
 
 int OnInit()
